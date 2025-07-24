@@ -1,0 +1,61 @@
+#TODO cannot compile without cuda (use image with cuda or use cpu only feature)
+name: CI
+on:
+  pull_request:
+    branches:
+    - main
+  push:
+    branches:
+    - main
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Install last version of Protoc
+      uses: arduino/setup-protoc@v2
+      with:
+        version: '24.x'
+#        repo-token: ${{ secrets.GITHUB_TOKEN }}
+    - name: Checkout Crate
+      uses: actions/checkout@v4
+      with:
+        submodules: true
+    - name: Set Toolchain
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        toolchain: stable
+        components: rustfmt, clippy
+    - name: Run check
+      run: cargo check
+    - name: Run rustfmt
+      run: cargo fmt --all -- --check
+    - name: Run clippy
+      run: cargo clippy -- -D warnings
+
+  job-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+    - name: Install last version of Protoc
+      uses: arduino/setup-protoc@v2
+      with:
+        version: '24.x'
+#        repo-token: ${{ secrets.GITHUB_TOKEN }}
+    - uses: actions/checkout@v4
+      with:
+        submodules: true
+    - uses: actions/cache@v3
+      with:
+        path: |
+          ~/.cargo/bin/
+          ~/.cargo/registry/index/
+          ~/.cargo/registry/cache/
+          ~/.cargo/git/db/
+          target/
+        key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+    - uses: dtolnay/rust-toolchain@stable
+    - name: Run test all features
+      run: cargo test --all-features
