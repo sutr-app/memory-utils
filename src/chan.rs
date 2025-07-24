@@ -1,7 +1,7 @@
 pub mod broadcast;
 pub mod mpmc;
 
-use super::memory::{MemoryCacheConfig, MemoryCacheImpl, UseMemoryCache};
+use super::cache::stretto::{MemoryCacheConfig, MemoryCacheImpl, UseMemoryCache};
 use anyhow::{anyhow, Result};
 use debug_stub_derive::DebugStub;
 use futures::{
@@ -49,7 +49,7 @@ impl<T: Send + Sync + Clone, C: ChanTrait<ChanBufferItem<T>>> ChanBuffer<T, C> {
     pub fn new(buf_size: Option<usize>, max_channels: usize) -> Self {
         Self {
             buf_size,
-            chan_buf: super::memory::MemoryCacheImpl::new(
+            chan_buf: super::cache::stretto::MemoryCacheImpl::new(
                 &MemoryCacheConfig {
                     num_counters: max_channels,
                     max_cost: max_channels as i64,

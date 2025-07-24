@@ -158,7 +158,7 @@ mod test {
     use std::time::Duration;
 
     use super::{BroadcastChan, UseBroadcastChanBuffer};
-    use crate::infra::chan::{ChanBuffer, ChanBufferItem, ChanTrait};
+    use crate::chan::{ChanBuffer, ChanBufferItem, ChanTrait};
     use anyhow::Result;
     use futures::StreamExt;
 

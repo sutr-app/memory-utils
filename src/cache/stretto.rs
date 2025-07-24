@@ -1,4 +1,4 @@
-use super::lock::RwLockWithKey;
+use crate::lock::RwLockWithKey;
 use anyhow::Result;
 use async_trait::async_trait;
 use debug_stub_derive::DebugStub;
@@ -305,7 +305,7 @@ impl<K: Hash + Eq + std::fmt::Debug + Send + Clone, V: Send + Sync + 'static>
 
 #[cfg(test)]
 mod test {
-    use crate::infra::memory::{MemoryCacheConfig, MemoryCacheImpl, UseMemoryCache};
+    use crate::cache::stretto::{MemoryCacheConfig, MemoryCacheImpl, UseMemoryCache};
     use anyhow::Result;
     use std::{sync::Arc, time::Duration};
 

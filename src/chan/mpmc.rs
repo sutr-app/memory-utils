@@ -111,7 +111,7 @@ pub trait UseChanBuffer {
 
 #[cfg(test)]
 mod tests {
-    use crate::infra::chan::ChanBuffer;
+    use crate::chan::ChanBuffer;
 
     use super::*;
     use tokio::time::{sleep, Duration};

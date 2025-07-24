@@ -1,4 +1,4 @@
-use super::lock::RwLockWithKey;
+use crate::lock::RwLockWithKey;
 use anyhow::Result;
 use async_trait::async_trait;
 use debug_stub_derive::DebugStub;
@@ -200,7 +200,7 @@ impl<
 
 #[cfg(test)]
 mod test {
-    use crate::infra::cache::{MokaCacheConfig, MokaCacheImpl, UseMokaCache};
+    use crate::cache::moka::{MokaCacheConfig, MokaCacheImpl, UseMokaCache};
     use anyhow::Result;
     use std::{sync::Arc, time::Duration};
 
