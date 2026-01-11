@@ -98,9 +98,7 @@ impl<T: Send + Sync + Clone + 'static + std::fmt::Debug> ChanTrait<T> for Broadc
                     .take_while(|i| futures::future::ready(i.is_ok())) // timeout
                     .filter_map(|result| async {
                         match result {
-                            Ok(Ok(value)) => {
-                                Some(value)
-                            }
+                            Ok(Ok(value)) => Some(value),
                             Ok(Err(e)) => {
                                 tracing::error!("chan recv error: {:?}", e);
                                 None
