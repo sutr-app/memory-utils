@@ -99,7 +99,6 @@ impl<T: Send + Sync + Clone + 'static + std::fmt::Debug> ChanTrait<T> for Broadc
                     .filter_map(|result| async {
                         match result {
                             Ok(Ok(value)) => {
-                                tracing::debug!("===== receive_stream_from_chan: {:?}", value);
                                 Some(value)
                             }
                             Ok(Err(e)) => {
