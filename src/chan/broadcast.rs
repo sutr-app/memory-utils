@@ -38,6 +38,10 @@ impl<T: Send + Sync + Clone + 'static> BroadcastChan<T> {
     pub fn count(&self) -> usize {
         self.sender.len()
     }
+    /// Returns the number of active receivers (subscribers)
+    pub fn receiver_count(&self) -> usize {
+        self.sender.receiver_count()
+    }
 }
 impl<T: Send + Sync + Clone + 'static + std::fmt::Debug> ChanTrait<T> for BroadcastChan<T> {
     fn new(buf_size: Option<usize>) -> Self {
@@ -141,6 +145,10 @@ impl<T: Send + Sync + Clone + 'static + std::fmt::Debug> ChanTrait<T> for Broadc
 
     fn count(&self) -> usize {
         self.count()
+    }
+
+    fn receiver_count(&self) -> usize {
+        self.receiver_count()
     }
 }
 pub trait UseBroadcastChanBuffer {

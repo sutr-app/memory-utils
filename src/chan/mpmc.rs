@@ -101,6 +101,10 @@ impl<T: Send + Sync + Clone + std::fmt::Debug + 'static> ChanTrait<T> for Chan<T
     fn count(&self) -> usize {
         self.count()
     }
+
+    fn receiver_count(&self) -> usize {
+        self.receiver_count()
+    }
 }
 
 pub trait UseChanBuffer {

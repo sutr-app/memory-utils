@@ -34,6 +34,8 @@ pub trait ChanTrait<T: Send + Sync + Clone>: Send + Sync + std::fmt::Debug {
 
     fn key_set(&self) -> Arc<Mutex<HashSet<String>>>; // prevent duplicate key
     fn count(&self) -> usize;
+    /// Returns the number of active receivers (subscribers)
+    fn receiver_count(&self) -> usize;
 }
 
 pub type ChanBufferItem<T> = (Option<String>, T);
@@ -83,6 +85,16 @@ impl<T: Send + Sync + Clone, C: ChanTrait<ChanBufferItem<T>>> ChanBuffer<T, C> {
     pub async fn clear_chan_all(&self) -> Result<()> {
         self.chan_buf.clear().await
     }
+
+    /// Returns the number of active receivers for the specified channel
+    /// Returns 0 if the channel doesn't exist
+    pub async fn receiver_count(&self, name: impl Into<String>) -> usize {
+        self.get_chan_if_exists(name)
+            .await
+            .map(|ch| ch.receiver_count())
+            .unwrap_or(0)
+    }
+
     pub async fn send_to_chan(
         &self,
         name: impl Into<String> + Send,
@@ -438,6 +450,10 @@ mod tests {
 
         fn count(&self) -> usize {
             0
+        }
+
+        fn receiver_count(&self) -> usize {
+            self.sender.receiver_count()
         }
     }
 
