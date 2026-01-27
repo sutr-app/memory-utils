@@ -2,11 +2,11 @@ pub mod broadcast;
 pub mod mpmc;
 
 use super::cache::stretto::{MemoryCacheConfig, MemoryCacheImpl, UseMemoryCache};
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use debug_stub_derive::DebugStub;
 use futures::{
-    stream::{BoxStream, StreamExt},
     Stream,
+    stream::{BoxStream, StreamExt},
 };
 use std::{collections::HashSet, marker::PhantomData, sync::Arc, time::Duration};
 use tokio::sync::Mutex;
@@ -158,14 +158,17 @@ impl<T: Send + Sync + Clone, C: ChanTrait<ChanBufferItem<T>>> ChanBuffer<T, C> {
                     let c_clone = chan.clone();
                     async move {
                         if let Ok(data) = data_result {
-                            if let Err(e) = c_clone.send_to_chan(data).await {
-                                tracing::error!(
-                                    "send data error on channel '{}': {:?}",
-                                    &nm_clone,
-                                    e
-                                );
-                            } else {
-                                tracing::debug!("===== send data to channel: {}", &nm_clone);
+                            match c_clone.send_to_chan(data).await {
+                                Err(e) => {
+                                    tracing::error!(
+                                        "send data error on channel '{}': {:?}",
+                                        &nm_clone,
+                                        e
+                                    );
+                                }
+                                _ => {
+                                    tracing::debug!("===== send data to channel: {}", &nm_clone);
+                                }
                             }
                         }
                     }
@@ -613,11 +616,13 @@ mod tests {
         let send2 = test_buf.send(key, data, uniq, None).await;
         assert!(send2.is_err());
         // not send error but uniq_key error
-        assert!(send2
-            .err()
-            .unwrap()
-            .to_string()
-            .contains("duplicate uniq_key"));
+        assert!(
+            send2
+                .err()
+                .unwrap()
+                .to_string()
+                .contains("duplicate uniq_key")
+        );
     }
 
     // #[tokio::test]
@@ -667,11 +672,13 @@ mod tests {
         // timeout
         let recv_result = recv_task.await.unwrap();
         assert!(recv_result.is_err());
-        assert!(recv_result
-            .err()
-            .unwrap()
-            .to_string()
-            .contains("chan recv timeout error"));
+        assert!(
+            recv_result
+                .err()
+                .unwrap()
+                .to_string()
+                .contains("chan recv timeout error")
+        );
     }
 
     #[tokio::test]

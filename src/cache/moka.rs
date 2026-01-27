@@ -185,9 +185,9 @@ where
 }
 
 impl<
-        K: Hash + Eq + std::fmt::Debug + Send + Sync + Clone + 'static,
-        V: Send + Sync + Clone + 'static,
-    > MokaCacheImpl<K, V>
+    K: Hash + Eq + std::fmt::Debug + Send + Sync + Clone + 'static,
+    V: Send + Sync + Clone + 'static,
+> MokaCacheImpl<K, V>
 {
     pub fn new(config: &MokaCacheConfig) -> Self {
         Self {

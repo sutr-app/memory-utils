@@ -1,4 +1,4 @@
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use std::{collections::HashSet, sync::Arc, time::Duration};
 use tokio::sync::Mutex;
 
@@ -118,7 +118,7 @@ mod tests {
     use crate::chan::ChanBuffer;
 
     use super::*;
-    use tokio::time::{sleep, Duration};
+    use tokio::time::{Duration, sleep};
 
     #[derive(Clone)]
     struct Test {

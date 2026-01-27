@@ -1,10 +1,10 @@
 use super::{ChanBuffer, ChanBufferItem, ChanTrait};
-use anyhow::{anyhow, Result};
-use futures::{stream::BoxStream, StreamExt as _};
+use anyhow::{Result, anyhow};
+use futures::{StreamExt as _, stream::BoxStream};
 use std::{collections::HashSet, sync::Arc};
 use tokio::sync::{
-    broadcast::{self, error::SendError},
     Mutex,
+    broadcast::{self, error::SendError},
 };
 use tokio_stream::wrappers::BroadcastStream;
 
