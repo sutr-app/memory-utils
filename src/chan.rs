@@ -219,11 +219,11 @@ impl<T: Send + Sync + Clone, C: ChanTrait<ChanBufferItem<T>>> ChanBuffer<T, C> {
         Ok(res.1)
     }
 
-    pub async fn receive_stream_from_chan(
+    pub async fn receive_stream_from_chan<N: Into<String> + Send>(
         &self,
-        name: impl Into<String> + Send,
+        name: N,
         ttl: Option<Duration>,
-    ) -> Result<impl Stream<Item = T> + Send> {
+    ) -> Result<impl Stream<Item = T> + Send + use<T, C, N>> {
         let nm = name.into();
         tracing::debug!("receive stream from chan: {}", &nm);
         let chan = self.get_or_create_chan(nm.clone(), ttl.as_ref()).await?;
