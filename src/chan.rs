@@ -86,6 +86,22 @@ impl<T: Send + Sync + Clone, C: ChanTrait<ChanBufferItem<T>>> ChanBuffer<T, C> {
         self.chan_buf.clear().await
     }
 
+    /// Delete a specific channel by name
+    /// Returns true if the channel existed and was deleted
+    pub async fn delete_chan(&self, name: impl Into<String>) -> Result<bool> {
+        let k = name.into();
+        match self.chan_buf.delete_cache_locked(&k).await {
+            Ok(()) => {
+                tracing::debug!("deleted channel: {}", &k);
+                Ok(true)
+            }
+            Err(e) => {
+                tracing::warn!("failed to delete channel {}: {:?}", &k, e);
+                Err(e)
+            }
+        }
+    }
+
     /// Returns the number of active receivers for the specified channel
     /// Returns 0 if the channel doesn't exist
     pub async fn receiver_count(&self, name: impl Into<String>) -> usize {

@@ -14,8 +14,10 @@ pub struct BroadcastChan<T: Send + Sync + Clone + 'static> {
     pub key_set: Arc<Mutex<HashSet<String>>>,
 }
 impl<T: Send + Sync + Clone + 'static> BroadcastChan<T> {
-    // 32MB
-    const DEFAULT_BUF_SIZE: usize = 32_000_000;
+    const DEFAULT_BUF_SIZE: usize = 2_000_000;
+    // 64KB (reduced from 32MB to minimize memory usage per channel)
+    // const DEFAULT_BUF_SIZE: usize = 64_000;
+    // const DEFAULT_BUF_SIZE: usize = 32_000_000;
     pub fn new(capacity: usize) -> Self {
         let (sender, _) = broadcast::channel(capacity);
         let sref = Arc::new(sender);
