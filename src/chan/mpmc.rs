@@ -39,8 +39,8 @@ impl<T: Send + Sync + Clone> Chan<T> {
     }
 }
 impl<T: Send + Sync + Clone + std::fmt::Debug + 'static> ChanTrait<T> for Chan<T> {
-    fn new(buf_size: Option<usize>) -> Self {
-        Chan::new(buf_size)
+    fn new(channel_capacity: Option<usize>) -> Self {
+        Chan::new(channel_capacity)
     }
 
     async fn send_to_chan(&self, data: T) -> Result<bool> {

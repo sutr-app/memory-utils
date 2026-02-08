@@ -12,7 +12,7 @@ use std::{collections::HashSet, marker::PhantomData, sync::Arc, time::Duration};
 use tokio::sync::Mutex;
 
 pub trait ChanTrait<T: Send + Sync + Clone>: Send + Sync + std::fmt::Debug {
-    fn new(buf_size: Option<usize>) -> Self;
+    fn new(channel_capacity: Option<usize>) -> Self;
     /// send data to channel
     /// # Arguments
     /// * `data` - data to send
@@ -42,15 +42,15 @@ pub type ChanBufferItem<T> = (Option<String>, T);
 
 #[derive(Clone, DebugStub)]
 pub struct ChanBuffer<T: Send + Sync + Clone + 'static, C: ChanTrait<ChanBufferItem<T>> + 'static> {
-    buf_size: Option<usize>,
+    channel_capacity: Option<usize>,
     chan_buf: MemoryCacheImpl<String, Arc<C>>,
     _phantom: PhantomData<T>,
 }
 
 impl<T: Send + Sync + Clone, C: ChanTrait<ChanBufferItem<T>>> ChanBuffer<T, C> {
-    pub fn new(buf_size: Option<usize>, max_channels: usize) -> Self {
+    pub fn new(channel_capacity: Option<usize>, max_channels: usize) -> Self {
         Self {
-            buf_size,
+            channel_capacity,
             chan_buf: super::cache::stretto::MemoryCacheImpl::new(
                 &MemoryCacheConfig {
                     num_counters: max_channels,
@@ -76,7 +76,7 @@ impl<T: Send + Sync + Clone, C: ChanTrait<ChanBufferItem<T>>> ChanBuffer<T, C> {
         self.chan_buf
             .with_cache_locked(&k, ttl, || async {
                 tracing::debug!("create new channel: {}", &k);
-                let ch = Arc::new(C::new(self.buf_size));
+                let ch = Arc::new(C::new(self.channel_capacity));
                 Ok(ch)
             })
             .await
@@ -404,8 +404,8 @@ mod tests {
     impl<T: Send + Sync + Clone + std::fmt::Debug + 'static> ChanTrait<ChanBufferItem<T>>
         for DummyChan<T>
     {
-        fn new(buf_size: Option<usize>) -> Self {
-            let capacity = buf_size.unwrap_or(10);
+        fn new(channel_capacity: Option<usize>) -> Self {
+            let capacity = channel_capacity.unwrap_or(10);
             let (sender, _) = broadcast::channel(capacity);
             DummyChan {
                 sender,

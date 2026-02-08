@@ -14,10 +14,11 @@ pub struct BroadcastChan<T: Send + Sync + Clone + 'static> {
     pub key_set: Arc<Mutex<HashSet<String>>>,
 }
 impl<T: Send + Sync + Clone + 'static> BroadcastChan<T> {
-    const DEFAULT_BUF_SIZE: usize = 2_000_000;
-    // 64KB (reduced from 32MB to minimize memory usage per channel)
-    // const DEFAULT_BUF_SIZE: usize = 64_000;
-    // const DEFAULT_BUF_SIZE: usize = 32_000_000;
+    // Number of messages the broadcast ring buffer can hold.
+    // Each slot retains a clone of T until overwritten, so choose a value
+    // considering the expected payload size per message to avoid excessive
+    // memory consumption (e.g., large Vec<u8> payloads).
+    const DEFAULT_QUEUE_SIZE: usize = 1024;
     pub fn new(capacity: usize) -> Self {
         let (sender, _) = broadcast::channel(capacity);
         let sref = Arc::new(sender);
@@ -46,11 +47,8 @@ impl<T: Send + Sync + Clone + 'static> BroadcastChan<T> {
     }
 }
 impl<T: Send + Sync + Clone + 'static + std::fmt::Debug> ChanTrait<T> for BroadcastChan<T> {
-    fn new(buf_size: Option<usize>) -> Self {
-        Self::new(buf_size.unwrap_or_else(|| {
-            let bytes = std::mem::size_of::<T>() as f64;
-            ((Self::DEFAULT_BUF_SIZE as f64) / bytes) as usize
-        }))
+    fn new(channel_capacity: Option<usize>) -> Self {
+        Self::new(channel_capacity.unwrap_or(Self::DEFAULT_QUEUE_SIZE))
     }
 
     async fn send_to_chan(&self, data: T) -> Result<bool> {
