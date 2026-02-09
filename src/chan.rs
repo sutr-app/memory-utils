@@ -111,6 +111,13 @@ impl<T: Send + Sync + Clone, C: ChanTrait<ChanBufferItem<T>>> ChanBuffer<T, C> {
             .unwrap_or(0)
     }
 
+    /// Send data to a named channel.
+    ///
+    /// Returns `Ok(true)` if the data was sent to at least one receiver,
+    /// `Ok(false)` if the channel has no receivers or (when `only_if_exists`
+    /// is true) the channel does not exist yet.
+    /// Returns `Err` only on real failures (e.g., serialization error,
+    /// duplicate `uniq_key`).
     pub async fn send_to_chan(
         &self,
         name: impl Into<String> + Send,
@@ -121,9 +128,13 @@ impl<T: Send + Sync + Clone, C: ChanTrait<ChanBufferItem<T>>> ChanBuffer<T, C> {
     ) -> Result<bool> {
         let nm = name.into();
         let chan = if only_if_exists {
-            self.get_chan_if_exists(nm.clone())
-                .await
-                .ok_or_else(|| anyhow!("channel not found: {}", nm.clone()))?
+            match self.get_chan_if_exists(nm.clone()).await {
+                Some(ch) => ch,
+                None => {
+                    tracing::debug!("channel not found (no subscriber): {}", nm);
+                    return Ok(false);
+                }
+            }
         } else {
             self.get_or_create_chan(nm.clone(), ttl).await?
         };
@@ -137,6 +148,11 @@ impl<T: Send + Sync + Clone, C: ChanTrait<ChanBufferItem<T>>> ChanBuffer<T, C> {
         }
         chan.send_to_chan((uniq_key, data)).await
     }
+    /// Send a stream of data items to a named channel.
+    ///
+    /// Returns `Ok(true)` on success, `Ok(false)` if the channel does not
+    /// exist when `only_if_exists` is true.
+    /// Returns `Err` only on real failures.
     pub async fn send_stream_to_chan(
         &self,
         name: impl Into<String> + Send,
@@ -147,9 +163,13 @@ impl<T: Send + Sync + Clone, C: ChanTrait<ChanBufferItem<T>>> ChanBuffer<T, C> {
     ) -> Result<bool> {
         let nm = name.into();
         let chan = if only_if_exists {
-            self.get_chan_if_exists(nm.clone())
-                .await
-                .ok_or_else(|| anyhow!("channel not found: {}", nm.clone()))?
+            match self.get_chan_if_exists(nm.clone()).await {
+                Some(ch) => ch,
+                None => {
+                    tracing::debug!("channel not found (no subscriber): {}", nm);
+                    return Ok(false);
+                }
+            }
         } else {
             self.get_or_create_chan(nm.clone(), ttl).await?
         };
