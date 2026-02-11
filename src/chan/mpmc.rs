@@ -133,6 +133,7 @@ mod tests {
     use crate::chan::ChanBuffer;
 
     use super::*;
+    use crate::chan::ChanTrait;
     use tokio::time::{Duration, sleep};
 
     #[derive(Clone)]
@@ -212,6 +213,28 @@ mod tests {
             .unwrap();
         handle.await.unwrap();
     }
+    #[tokio::test]
+    async fn test_mpmc_receive_with_check_returns_some() {
+        let chan = Chan::<i32>::new(Some(5));
+        let result = chan
+            .receive_from_chan_with_check(Some(Duration::from_secs(1)), || async { Some(42) })
+            .await
+            .unwrap();
+        assert_eq!(result, 42);
+    }
+
+    #[tokio::test]
+    async fn test_mpmc_receive_with_check_returns_none_then_recv() {
+        let chan = Chan::<i32>::new(Some(5));
+        // mpmc channels buffer messages, so send before receive works
+        chan.send_to_chan(99).await.unwrap();
+        let result = chan
+            .receive_from_chan_with_check(Some(Duration::from_secs(1)), || async { None })
+            .await
+            .unwrap();
+        assert_eq!(result, 99);
+    }
+
     #[tokio::test]
     async fn test_chan_buf_recv_timeout() {
         let test = Test {

@@ -195,6 +195,7 @@ mod test {
     use crate::chan::{ChanBuffer, ChanBufferItem, ChanTrait};
     use anyhow::Result;
     use futures::StreamExt;
+    use std::sync::Arc;
 
     #[tokio::test]
     async fn test_broadcast_chan() -> Result<()> {
@@ -356,6 +357,75 @@ mod test {
                 .filter(|&i| i < 350)
                 .collect::<Vec<_>>()
         );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_broadcast_receive_with_check_returns_some() -> Result<()> {
+        let chan = BroadcastChan::<i32>::new(5);
+        let result = chan
+            .receive_from_chan_with_check(Some(Duration::from_secs(1)), || async { Some(42) })
+            .await?;
+        assert_eq!(result, 42);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_broadcast_receive_with_check_returns_none_then_recv() -> Result<()> {
+        let chan = BroadcastChan::<i32>::new(5);
+        let chan_clone = chan.clone();
+        let handle = tokio::spawn(async move {
+            chan_clone
+                .receive_from_chan_with_check(Some(Duration::from_secs(3)), || async { None })
+                .await
+        });
+        // Allow receiver registration before sending
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        chan.send(99)?;
+        let result = handle.await.unwrap()?;
+        assert_eq!(result, 99);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_broadcast_receive_with_check_race_publish_during_check() -> Result<()> {
+        // Reproduces the original race condition scenario:
+        // receiver is registered before check runs, so a send during check is captured.
+        let chan = BroadcastChan::<i32>::new(5);
+        let chan_clone = chan.clone();
+        let check_started = Arc::new(tokio::sync::Notify::new());
+        let check_started_clone = check_started.clone();
+
+        let handle = tokio::spawn(async move {
+            chan_clone
+                .receive_from_chan_with_check(Some(Duration::from_secs(3)), || {
+                    let notify = check_started_clone;
+                    async move {
+                        notify.notify_one();
+                        tokio::time::sleep(Duration::from_millis(200)).await;
+                        None
+                    }
+                })
+                .await
+        });
+
+        // Wait until check has started (receiver is already registered at this point)
+        check_started.notified().await;
+        chan.send(77)?;
+
+        let result = handle.await.unwrap()?;
+        assert_eq!(result, 77);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_broadcast_receive_with_check_timeout() -> Result<()> {
+        let chan = BroadcastChan::<i32>::new(5);
+        let result = chan
+            .receive_from_chan_with_check(Some(Duration::from_millis(100)), || async { None })
+            .await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("timeout"));
         Ok(())
     }
 

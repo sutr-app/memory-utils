@@ -763,6 +763,88 @@ mod tests {
     // }
 
     #[tokio::test]
+    async fn test_chan_buffer_receive_with_check_returns_some() {
+        let test_buf = TestChanBuffer::new();
+        let key = "chan_with_check_some";
+        let data = b"check_hit".to_vec();
+        let data_clone = data.clone();
+
+        let result = test_buf
+            .chan_buf
+            .receive_from_chan_with_check(key, Some(Duration::from_secs(1)), None, || async move {
+                Some((None, data_clone))
+            })
+            .await
+            .unwrap();
+        assert_eq!(result, data);
+    }
+
+    #[tokio::test]
+    async fn test_chan_buffer_receive_with_check_returns_none_then_channel() {
+        let test_buf = TestChanBuffer::new();
+        let key = "chan_with_check_none";
+        let data = b"from_channel".to_vec();
+
+        let (ready_tx, ready_rx) = oneshot::channel();
+        let recv_task = tokio::spawn({
+            let test_buf = test_buf.clone();
+            let key = key.to_string();
+            async move {
+                let _ = ready_tx.send(());
+                test_buf
+                    .chan_buf
+                    .receive_from_chan_with_check(
+                        key.as_str(),
+                        Some(Duration::from_secs(5)),
+                        None,
+                        || async { None },
+                    )
+                    .await
+            }
+        });
+
+        let _ = ready_rx.await;
+        test_buf.send(key, data.clone(), None, None).await.unwrap();
+
+        let result = recv_task.await.unwrap().unwrap();
+        assert_eq!(result, data);
+    }
+
+    #[tokio::test]
+    async fn test_chan_buffer_receive_with_check_timeout() {
+        let test_buf = TestChanBuffer::new();
+        let key = "chan_with_check_timeout";
+
+        let (ready_tx, ready_rx) = oneshot::channel();
+        let recv_task = tokio::spawn({
+            let test_buf = test_buf.clone();
+            let key = key.to_string();
+            async move {
+                let _ = ready_tx.send(());
+                test_buf
+                    .chan_buf
+                    .receive_from_chan_with_check(
+                        key.as_str(),
+                        Some(Duration::from_millis(100)),
+                        None,
+                        || async { None },
+                    )
+                    .await
+            }
+        });
+
+        let _ = ready_rx.await;
+        let result = recv_task.await.unwrap();
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("chan recv timeout error")
+        );
+    }
+
+    #[tokio::test]
     async fn test_receive_timeout() {
         let test_buf = TestChanBuffer::new();
         let key = "channel_timeout";
