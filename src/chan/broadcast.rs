@@ -139,6 +139,35 @@ impl<T: Send + Sync + Clone + 'static + std::fmt::Debug> ChanTrait<T> for Broadc
             .map_err(|e| anyhow!("chan recv error: {:?}", e))
     }
 
+    async fn receive_from_chan_with_check<F, Fut>(
+        &self,
+        recv_timeout: Option<std::time::Duration>,
+        check: F,
+    ) -> Result<T>
+    where
+        F: FnOnce() -> Fut + Send,
+        Fut: std::future::Future<Output = Option<T>> + Send,
+    {
+        let mut receiver = self.receiver().await;
+
+        // Receiver is now registered — publisher will find this channel and deliver.
+        if let Some(value) = check().await {
+            return Ok(value);
+        }
+
+        // Check returned None — wait for message on the channel
+        match recv_timeout {
+            Some(dur) => tokio::time::timeout(dur, receiver.recv())
+                .await
+                .map_err(|e| anyhow!("chan recv timeout error: {:?}", e))?
+                .map_err(|e| anyhow!("chan recv error: {:?}", e)),
+            None => receiver
+                .recv()
+                .await
+                .map_err(|e| anyhow!("chan recv error: {:?}", e)),
+        }
+    }
+
     fn key_set(&self) -> Arc<tokio::sync::Mutex<std::collections::HashSet<String>>> {
         self.key_set.clone()
     }

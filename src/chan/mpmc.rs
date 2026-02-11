@@ -94,6 +94,21 @@ impl<T: Send + Sync + Clone + std::fmt::Debug + 'static> ChanTrait<T> for Chan<T
             .map_err(|e| anyhow!("chan recv error: {:?}", e))
     }
 
+    async fn receive_from_chan_with_check<F, Fut>(
+        &self,
+        recv_timeout: Option<Duration>,
+        check: F,
+    ) -> Result<T>
+    where
+        F: FnOnce() -> Fut + Send,
+        Fut: std::future::Future<Output = Option<T>> + Send,
+    {
+        if let Some(value) = check().await {
+            return Ok(value);
+        }
+        self.receive_from_chan(recv_timeout).await
+    }
+
     fn key_set(&self) -> Arc<Mutex<HashSet<String>>> {
         self.key_set.clone()
     }

@@ -32,6 +32,17 @@ pub trait ChanTrait<T: Send + Sync + Clone>: Send + Sync + std::fmt::Debug {
 
     fn try_receive_from_chan(&self) -> impl std::future::Future<Output = Result<T>> + Send;
 
+    /// Like receive_from_chan, but calls an async check after subscriber registration
+    /// and before blocking on recv. If check returns Some(value), returns it immediately.
+    fn receive_from_chan_with_check<F, Fut>(
+        &self,
+        recv_timeout: Option<Duration>,
+        check: F,
+    ) -> impl std::future::Future<Output = Result<T>> + Send
+    where
+        F: FnOnce() -> Fut + Send,
+        Fut: std::future::Future<Output = Option<T>> + Send;
+
     fn key_set(&self) -> Arc<Mutex<HashSet<String>>>; // prevent duplicate key
     fn count(&self) -> usize;
     /// Returns the number of active receivers (subscribers)
@@ -243,6 +254,48 @@ impl<T: Send + Sync + Clone, C: ChanTrait<ChanBufferItem<T>>> ChanBuffer<T, C> {
             let key_set = chan.key_set();
             (
                 chan.receive_from_chan(None)
+                    .await
+                    .map_err(|e| anyhow!("chan recv error: {:?}", e))?,
+                key_set,
+            )
+        };
+        if let Some(ukey) = res.0 {
+            let mut ksl = key_set.lock().await;
+            ksl.remove(&ukey);
+        }
+        Ok(res.1)
+    }
+
+    /// Like receive_from_chan, but calls an async check after subscriber registration
+    /// and before blocking on recv. If check returns Some(value), returns it immediately.
+    pub async fn receive_from_chan_with_check<F, Fut>(
+        &self,
+        name: impl Into<String> + Send,
+        recv_timeout: Option<Duration>,
+        ttl: Option<&Duration>,
+        check: F,
+    ) -> Result<T>
+    where
+        F: FnOnce() -> Fut + Send,
+        Fut: std::future::Future<Output = Option<ChanBufferItem<T>>> + Send,
+    {
+        let nm = name.into();
+        let chan = self.get_or_create_chan(nm.clone(), ttl).await?;
+        let (res, key_set) = if let Some(dur) = recv_timeout {
+            let key_set = chan.key_set();
+            (
+                tokio::time::timeout(dur, chan.receive_from_chan_with_check(None, check))
+                    .await
+                    .map_err(|e| {
+                        anyhow!("chan recv timeout error: timeout={:?}, err={:?}", dur, e)
+                    })?
+                    .map_err(|e| anyhow!("chan recv error: {:?}", e))?,
+                key_set,
+            )
+        } else {
+            let key_set = chan.key_set();
+            (
+                chan.receive_from_chan_with_check(None, check)
                     .await
                     .map_err(|e| anyhow!("chan recv error: {:?}", e))?,
                 key_set,
@@ -480,6 +533,27 @@ mod tests {
                 receiver
                     .try_recv()
                     .map_err(|e| anyhow!("try_receive_from_chan error: {:?}", e))
+            }
+        }
+
+        fn receive_from_chan_with_check<F, Fut>(
+            &self,
+            _recv_timeout: Option<Duration>,
+            check: F,
+        ) -> impl std::future::Future<Output = Result<ChanBufferItem<T>>> + Send
+        where
+            F: FnOnce() -> Fut + Send,
+            Fut: std::future::Future<Output = Option<ChanBufferItem<T>>> + Send,
+        {
+            let mut receiver = self.sender.subscribe();
+            async move {
+                if let Some(value) = check().await {
+                    return Ok(value);
+                }
+                receiver
+                    .recv()
+                    .await
+                    .map_err(|e| anyhow!("receive_from_chan_with_check error: {:?}", e))
             }
         }
 
