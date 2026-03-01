@@ -206,15 +206,21 @@ impl<T: Send + Sync + Clone, C: ChanTrait<ChanBufferItem<T>>> ChanBuffer<T, C> {
                     async move {
                         if let Ok(data) = data_result {
                             match c_clone.send_to_chan(data).await {
+                                Ok(true) => {
+                                    tracing::debug!("===== send data to channel: {}", &nm_clone);
+                                }
+                                Ok(false) => {
+                                    tracing::warn!(
+                                        "send data to channel '{}': no receivers (data dropped)",
+                                        &nm_clone,
+                                    );
+                                }
                                 Err(e) => {
                                     tracing::error!(
                                         "send data error on channel '{}': {:?}",
                                         &nm_clone,
                                         e
                                     );
-                                }
-                                _ => {
-                                    tracing::debug!("===== send data to channel: {}", &nm_clone);
                                 }
                             }
                         }

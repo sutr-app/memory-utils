@@ -104,7 +104,8 @@ impl<T: Send + Sync + Clone + 'static + std::fmt::Debug> ChanTrait<T> for Broadc
                         match result {
                             Ok(Ok(value)) => Some(value),
                             Ok(Err(e)) => {
-                                tracing::error!("chan recv error: {:?}", e);
+                                // Lagged: receiver fell behind, skipped messages lost
+                                tracing::warn!("chan recv lagged (messages lost): {:?}", e);
                                 None
                             }
                             Err(e) => {
@@ -122,7 +123,7 @@ impl<T: Send + Sync + Clone + 'static + std::fmt::Debug> ChanTrait<T> for Broadc
                         match result {
                             Ok(value) => Some(value),
                             Err(e) => {
-                                tracing::error!("chan recv error: {:?}", e);
+                                tracing::warn!("chan recv lagged (messages lost): {:?}", e);
                                 None
                             }
                         }
