@@ -624,7 +624,7 @@ mod tests {
             uniq_key: Option<String>,
             ttl: Option<&Duration>,
         ) -> Result<bool> {
-            let stream = futures::stream::iter(data.into_iter()).then(|item| async move {
+            let stream = futures::stream::iter(data).then(|item| async move {
                 tokio::time::sleep(Duration::from_millis(200)).await;
                 // println!("===== send stream item: {:?}", item);
                 item
