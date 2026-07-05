@@ -6,7 +6,7 @@ use futures::Future;
 use std::fmt::Debug;
 use std::sync::Arc;
 use std::{hash::Hash, time::Duration};
-use stretto::AsyncCache;
+use stretto::{AsyncCacheBuilder, TokioCache, TokioRuntime};
 
 #[derive(serde_derive::Deserialize, Debug, Clone, Copy)]
 pub struct MemoryCacheConfig {
@@ -42,7 +42,7 @@ where
     /// default cache ttl
     fn default_ttl(&self) -> Option<&Duration>;
 
-    fn cache(&self) -> &AsyncCache<KEY, VAL>;
+    fn cache(&self) -> &TokioCache<KEY, VAL>;
 
     // lock for anti-stampede
     fn key_lock(&self) -> &RwLockWithKey<KEY>;
@@ -259,18 +259,18 @@ where
 
 pub fn new_memory_cache<K: Hash + Eq + std::fmt::Debug + Send + Clone, V: Send + Sync + 'static>(
     config: &MemoryCacheConfig,
-) -> AsyncCache<K, V> {
-    AsyncCache::<K, V>::builder(config.num_counters, config.max_cost)
+) -> TokioCache<K, V> {
+    AsyncCacheBuilder::<K, V>::new(config.num_counters, config.max_cost)
         .set_metrics(config.use_metrics)
-        .finalize(tokio::spawn)
+        .build::<TokioRuntime>()
         .unwrap()
 }
 
 #[derive(DebugStub, Clone)]
 pub struct MemoryCacheImpl<K: Hash + Eq + std::fmt::Debug + Send + Clone, V: Send + Sync + 'static>
 {
-    #[debug_stub = "AsyncCache<K, V>"]
-    cache: AsyncCache<K, V>,
+    #[debug_stub = "TokioCache<K, V>"]
+    cache: TokioCache<K, V>,
     key_lock: Arc<RwLockWithKey<K>>,
     default_ttl: Option<Duration>,
 }
@@ -283,7 +283,7 @@ where
     fn default_ttl(&self) -> Option<&Duration> {
         self.default_ttl.as_ref()
     }
-    fn cache(&self) -> &AsyncCache<K, V> {
+    fn cache(&self) -> &TokioCache<K, V> {
         &self.cache
     }
     fn key_lock(&self) -> &RwLockWithKey<K> {

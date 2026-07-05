@@ -20,7 +20,7 @@ futures = "0.3"
 moka = { version = "0.12", features = ["future"] }
 serde = "1.0"
 serde_derive = "1.0"
-stretto = { version = "0.8", features = ["async"] }
+stretto = { version = "0.9", features = ["tokio"] }
 tokio = { version = "1", features = [
     "full",
     # "macros",
