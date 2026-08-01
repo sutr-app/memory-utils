@@ -8,7 +8,12 @@ use futures::{
     Stream,
     stream::{BoxStream, StreamExt},
 };
-use std::{collections::HashSet, marker::PhantomData, sync::Arc, time::Duration};
+use std::{
+    collections::{HashMap, HashSet},
+    marker::PhantomData,
+    sync::Arc,
+    time::Duration,
+};
 use tokio::sync::Mutex;
 
 pub trait ChanTrait<T: Send + Sync + Clone>: Send + Sync + std::fmt::Debug {
@@ -54,7 +59,10 @@ pub type ChanBufferItem<T> = (Option<String>, T);
 #[derive(Clone, DebugStub)]
 pub struct ChanBuffer<T: Send + Sync + Clone + 'static, C: ChanTrait<ChanBufferItem<T>> + 'static> {
     channel_capacity: Option<usize>,
+    /// Bounded, evictable storage for channels without an active subscriber.
     chan_buf: MemoryCacheImpl<String, Arc<C>>,
+    /// Non-evictable ownership of channels that currently have a subscriber.
+    active_channels: Arc<Mutex<HashMap<String, Arc<C>>>>,
     _phantom: PhantomData<T>,
 }
 
@@ -70,12 +78,25 @@ impl<T: Send + Sync + Clone, C: ChanTrait<ChanBufferItem<T>>> ChanBuffer<T, C> {
                 },
                 None,
             ),
+            active_channels: Arc::new(Mutex::new(HashMap::new())),
             _phantom: PhantomData,
         }
     }
 
     pub async fn get_chan_if_exists(&self, name: impl Into<String>) -> Option<Arc<C>> {
-        self.chan_buf.find_cache_locked(&name.into()).await
+        let name = name.into();
+        if let Some(channel) = self.active_channels.lock().await.get(&name).cloned() {
+            return Some(channel);
+        }
+        self.chan_buf.find_cache_locked(&name).await
+    }
+
+    /// Return a channel only after its receiver has been registered.
+    ///
+    /// Publishers of non-buffering result notifications must use this method:
+    /// a cache entry can exist while a subscriber is still being established.
+    pub async fn get_active_chan_if_exists(&self, name: impl Into<String>) -> Option<Arc<C>> {
+        self.active_channels.lock().await.get(&name.into()).cloned()
     }
 
     async fn get_or_create_chan(
@@ -84,6 +105,9 @@ impl<T: Send + Sync + Clone, C: ChanTrait<ChanBufferItem<T>>> ChanBuffer<T, C> {
         ttl: Option<&Duration>,
     ) -> Result<Arc<C>> {
         let k = name.into();
+        if let Some(channel) = self.active_channels.lock().await.get(&k).cloned() {
+            return Ok(channel);
+        }
         self.chan_buf
             .with_cache_locked(&k, ttl, || async {
                 tracing::debug!("create new channel: {}", &k);
@@ -93,7 +117,22 @@ impl<T: Send + Sync + Clone, C: ChanTrait<ChanBufferItem<T>>> ChanBuffer<T, C> {
             .await
     }
 
+    async fn move_channel_to_active_storage(
+        active_channels: &Arc<Mutex<HashMap<String, Arc<C>>>>,
+        chan_buf: &MemoryCacheImpl<String, Arc<C>>,
+        name: String,
+        channel: Arc<C>,
+    ) {
+        active_channels.lock().await.insert(name.clone(), channel);
+        // Active channels are owned by `active_channels`, not by both stores.
+        // This keeps the cache budget available for inactive channels.
+        if let Err(error) = chan_buf.delete_cache_locked(&name).await {
+            tracing::warn!("failed to remove active channel {name} from cache: {error:?}");
+        }
+    }
+
     pub async fn clear_chan_all(&self) -> Result<()> {
+        self.active_channels.lock().await.clear();
         self.chan_buf.clear().await
     }
 
@@ -101,6 +140,7 @@ impl<T: Send + Sync + Clone, C: ChanTrait<ChanBufferItem<T>>> ChanBuffer<T, C> {
     /// Returns true if the channel existed and was deleted
     pub async fn delete_chan(&self, name: impl Into<String>) -> Result<bool> {
         let k = name.into();
+        self.active_channels.lock().await.remove(&k);
         match self.chan_buf.delete_cache_locked(&k).await {
             Ok(()) => {
                 tracing::debug!("deleted channel: {}", &k);
@@ -113,6 +153,24 @@ impl<T: Send + Sync + Clone, C: ChanTrait<ChanBufferItem<T>>> ChanBuffer<T, C> {
         }
     }
 
+    /// Remove an active channel only when it has no registered receivers.
+    ///
+    /// The receiver-count check and removal share the active-channel lock so
+    /// reconnecting subscribers cannot be removed by a stale cleanup task.
+    pub async fn delete_active_chan_if_no_receivers(&self, name: impl Into<String>) -> bool {
+        let name = name.into();
+        let mut active_channels = self.active_channels.lock().await;
+        let Some(channel) = active_channels.get(&name) else {
+            return false;
+        };
+        if channel.receiver_count() != 0 {
+            return false;
+        }
+        active_channels.remove(&name);
+        tracing::debug!(channel = %name, "deleted inactive active channel");
+        true
+    }
+
     /// Returns the number of active receivers for the specified channel
     /// Returns 0 if the channel doesn't exist
     pub async fn receiver_count(&self, name: impl Into<String>) -> usize {
@@ -120,6 +178,53 @@ impl<T: Send + Sync + Clone, C: ChanTrait<ChanBufferItem<T>>> ChanBuffer<T, C> {
             .await
             .map(|ch| ch.receiver_count())
             .unwrap_or(0)
+    }
+
+    async fn reserve_unique_key(chan: &Arc<C>, uniq_key: &Option<String>) -> Result<()> {
+        if let Some(uniq_key) = uniq_key {
+            let key_set = chan.key_set();
+            let mut key_set_lock = key_set.lock().await;
+            if !key_set_lock.insert(uniq_key.clone()) {
+                tracing::warn!("duplicate key: {uniq_key}");
+                return Err(anyhow!("duplicate uniq_key: {uniq_key}"));
+            }
+        }
+        Ok(())
+    }
+
+    async fn send_stream_to_resolved_chan(
+        channel_name: String,
+        chan: Arc<C>,
+        stream: impl Stream<Item = T> + Send + 'static,
+        uniq_key: Option<String>,
+    ) -> Result<bool> {
+        Self::reserve_unique_key(&chan, &uniq_key).await?;
+        let stream_key = uniq_key.clone();
+        let stream_channel_name = channel_name.clone();
+        stream
+            .map(move |data| Ok((stream_key.clone(), data)))
+            .for_each(move |data_result: Result<(Option<String>, T), anyhow::Error>| {
+                let channel_name = stream_channel_name.clone();
+                let chan = chan.clone();
+                async move {
+                    if let Ok(data) = data_result {
+                        match chan.send_to_chan(data).await {
+                            Ok(true) => tracing::debug!(
+                                "===== send data to channel: {channel_name}"
+                            ),
+                            Ok(false) => tracing::warn!(
+                                "send data to channel '{channel_name}': no receivers (data dropped)"
+                            ),
+                            Err(error) => tracing::error!(
+                                "send data error on channel '{channel_name}': {error:?}"
+                            ),
+                        }
+                    }
+                }
+            })
+            .await;
+        tracing::debug!("=== sent stream to channel: {channel_name}");
+        Ok(true)
     }
 
     /// Send data to a named channel.
@@ -149,14 +254,23 @@ impl<T: Send + Sync + Clone, C: ChanTrait<ChanBufferItem<T>>> ChanBuffer<T, C> {
         } else {
             self.get_or_create_chan(nm.clone(), ttl).await?
         };
-        if let Some(ukey) = &uniq_key {
-            let key_set = chan.key_set();
-            let mut ksl = key_set.lock().await;
-            if !ksl.insert(ukey.clone()) {
-                tracing::warn!("duplicate key: {}", ukey);
-                return Err(anyhow!("duplicate uniq_key: {}", ukey));
-            }
-        }
+        Self::reserve_unique_key(&chan, &uniq_key).await?;
+        chan.send_to_chan((uniq_key, data)).await
+    }
+
+    /// Send only to a channel whose receiver registration has completed.
+    pub async fn send_to_active_chan(
+        &self,
+        name: impl Into<String> + Send,
+        data: T,
+        uniq_key: Option<String>,
+    ) -> Result<bool> {
+        let name = name.into();
+        let Some(chan) = self.get_active_chan_if_exists(name.clone()).await else {
+            tracing::debug!("active channel not found: {name}");
+            return Ok(false);
+        };
+        Self::reserve_unique_key(&chan, &uniq_key).await?;
         chan.send_to_chan((uniq_key, data)).await
     }
     /// Send a stream of data items to a named channel.
@@ -185,51 +299,22 @@ impl<T: Send + Sync + Clone, C: ChanTrait<ChanBufferItem<T>>> ChanBuffer<T, C> {
             self.get_or_create_chan(nm.clone(), ttl).await?
         };
 
-        if let Some(ukey) = &uniq_key {
-            let key_set = chan.key_set();
-            let mut ksl = key_set.lock().await;
-            if !ksl.insert(ukey.clone()) {
-                tracing::warn!("duplicate key: {}", ukey);
-                return Err(anyhow!("duplicate uniq_key: {}", ukey));
-            }
-        }
-        let nm_clone = nm.clone();
-        // send stream to channel with iteration
-        let uniq_key_clone = uniq_key.clone();
-        stream
-            .map(move |data| Ok((uniq_key_clone.clone(), data)))
-            // .for_each_concurrent(None, |data_result| async {
-            .for_each(
-                move |data_result: Result<(Option<String>, T), anyhow::Error>| {
-                    let nm_clone = nm.clone();
-                    let c_clone = chan.clone();
-                    async move {
-                        if let Ok(data) = data_result {
-                            match c_clone.send_to_chan(data).await {
-                                Ok(true) => {
-                                    tracing::debug!("===== send data to channel: {}", &nm_clone);
-                                }
-                                Ok(false) => {
-                                    tracing::warn!(
-                                        "send data to channel '{}': no receivers (data dropped)",
-                                        &nm_clone,
-                                    );
-                                }
-                                Err(e) => {
-                                    tracing::error!(
-                                        "send data error on channel '{}': {:?}",
-                                        &nm_clone,
-                                        e
-                                    );
-                                }
-                            }
-                        }
-                    }
-                },
-            )
-            .await;
-        tracing::debug!("=== sent stream to channel: {}", &nm_clone);
-        Ok(true)
+        Self::send_stream_to_resolved_chan(nm, chan, stream, uniq_key).await
+    }
+
+    /// Send a stream only after a subscriber has finished receiver registration.
+    pub async fn send_stream_to_active_chan(
+        &self,
+        name: impl Into<String> + Send,
+        stream: impl Stream<Item = T> + Send + 'static,
+        uniq_key: Option<String>,
+    ) -> Result<bool> {
+        let name = name.into();
+        let Some(chan) = self.get_active_chan_if_exists(name.clone()).await else {
+            tracing::debug!("active channel not found: {name}");
+            return Ok(false);
+        };
+        Self::send_stream_to_resolved_chan(name, chan, stream, uniq_key).await
     }
     /// receive data from channel
     /// # Arguments
@@ -314,18 +399,79 @@ impl<T: Send + Sync + Clone, C: ChanTrait<ChanBufferItem<T>>> ChanBuffer<T, C> {
         Ok(res.1)
     }
 
+    /// Receive from a channel after registering its receiver and moving the
+    /// channel to non-evictable storage. `check` runs only after that order is
+    /// established, so it may safely make the channel visible to a publisher.
+    pub async fn receive_from_active_chan_with_check<F, Fut>(
+        &self,
+        name: impl Into<String> + Send,
+        recv_timeout: Option<Duration>,
+        ttl: Option<&Duration>,
+        check: F,
+    ) -> Result<T>
+    where
+        F: FnOnce() -> Fut + Send,
+        Fut: std::future::Future<Output = Option<ChanBufferItem<T>>> + Send,
+    {
+        let name = name.into();
+        let channel = self.get_or_create_chan(name.clone(), ttl).await?;
+        let active_channels = self.active_channels.clone();
+        let chan_buf = self.chan_buf.clone();
+        let channel_for_activation = channel.clone();
+        let activate = move || async move {
+            Self::move_channel_to_active_storage(
+                &active_channels,
+                &chan_buf,
+                name.clone(),
+                channel_for_activation,
+            )
+            .await;
+            check().await
+        };
+
+        let (res, key_set) = if let Some(duration) = recv_timeout {
+            let key_set = channel.key_set();
+            (
+                tokio::time::timeout(
+                    duration,
+                    channel.receive_from_chan_with_check(None, activate),
+                )
+                .await
+                .map_err(|error| {
+                    anyhow!("chan recv timeout error: timeout={duration:?}, err={error:?}")
+                })?
+                .map_err(|error| anyhow!("chan recv error: {error:?}"))?,
+                key_set,
+            )
+        } else {
+            let key_set = channel.key_set();
+            (
+                channel
+                    .receive_from_chan_with_check(None, activate)
+                    .await
+                    .map_err(|error| anyhow!("chan recv error: {error:?}"))?,
+                key_set,
+            )
+        };
+        if let Some(uniq_key) = res.0 {
+            key_set.lock().await.remove(&uniq_key);
+        }
+        Ok(res.1)
+    }
+
     pub async fn receive_stream_from_chan<N: Into<String> + Send>(
         &self,
         name: N,
-        ttl: Option<Duration>,
+        channel_ttl: Option<&Duration>,
+        recv_timeout: Option<Duration>,
     ) -> Result<impl Stream<Item = T> + Send + use<T, C, N>> {
         let nm = name.into();
         tracing::debug!("receive stream from chan: {}", &nm);
-        let chan = self.get_or_create_chan(nm.clone(), ttl.as_ref()).await?;
+        let chan = self.get_or_create_chan(nm.clone(), channel_ttl).await?;
 
         tracing::debug!("receive stream from chan: try unfold stream {}", &nm);
         let nm_clone = nm.clone();
-        match chan.receive_stream_from_chan(ttl).await {
+        match chan.receive_stream_from_chan(recv_timeout).await {
             Ok(st) => {
                 tracing::debug!("receive stream data from chan: {}", &nm_clone);
                 Ok(st.map(|(_opt_key, data)| data))
@@ -335,6 +481,23 @@ impl<T: Send + Sync + Clone, C: ChanTrait<ChanBufferItem<T>>> ChanBuffer<T, C> {
                 Err(e)
             }
         }
+    }
+
+    /// Register a stream receiver before making its channel non-evictable and
+    /// visible to publishers. This prevents an immediate publish from being
+    /// lost between subscription setup steps.
+    pub async fn receive_active_stream_from_chan<N: Into<String> + Send>(
+        &self,
+        name: N,
+        channel_ttl: Option<&Duration>,
+        recv_timeout: Option<Duration>,
+    ) -> Result<impl Stream<Item = T> + Send + use<T, C, N>> {
+        let name = name.into();
+        let channel = self.get_or_create_chan(name.clone(), channel_ttl).await?;
+        let stream = channel.receive_stream_from_chan(recv_timeout).await?;
+        Self::move_channel_to_active_storage(&self.active_channels, &self.chan_buf, name, channel)
+            .await;
+        Ok(stream.map(|(_uniq_key, data)| data))
     }
 
     pub async fn try_receive_from_chan(
@@ -574,6 +737,75 @@ mod tests {
         fn receiver_count(&self) -> usize {
             self.sender.receiver_count()
         }
+    }
+
+    #[tokio::test]
+    async fn clear_chan_all_releases_active_channels() {
+        let buffer: ChanBuffer<String, DummyChan<String>> = ChanBuffer::new(None, 10);
+        let _stream = buffer
+            .receive_active_stream_from_chan("active", None, None)
+            .await
+            .unwrap();
+        assert!(buffer.get_chan_if_exists("active").await.is_some());
+
+        buffer.clear_chan_all().await.unwrap();
+        assert!(buffer.get_chan_if_exists("active").await.is_none());
+    }
+
+    #[tokio::test]
+    async fn activation_moves_channel_out_of_evictable_cache() {
+        let buffer: ChanBuffer<String, DummyChan<String>> = ChanBuffer::new(None, 10);
+        let _stream = buffer
+            .receive_active_stream_from_chan("active", None, None)
+            .await
+            .unwrap();
+
+        assert!(buffer.get_chan_if_exists("active").await.is_some());
+        assert!(
+            buffer
+                .chan_buf
+                .find_cache_locked(&"active".to_string())
+                .await
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn conditional_active_channel_removal_keeps_new_receivers() {
+        let buffer: ChanBuffer<String, DummyChan<String>> = ChanBuffer::new(None, 10);
+        let stale_stream = buffer
+            .receive_active_stream_from_chan("active", None, None)
+            .await
+            .unwrap();
+        drop(stale_stream);
+        let _reconnected_stream = buffer
+            .receive_active_stream_from_chan("active", None, None)
+            .await
+            .unwrap();
+
+        assert!(!buffer.delete_active_chan_if_no_receivers("active").await);
+        assert!(buffer.get_active_chan_if_exists("active").await.is_some());
+    }
+
+    #[tokio::test]
+    async fn active_receiver_is_registered_before_publisher_can_send() {
+        let buffer: ChanBuffer<String, DummyChan<String>> = ChanBuffer::new(None, 10);
+        let publisher = buffer.clone();
+
+        let received = buffer
+            .receive_from_active_chan_with_check("active", None, None, move || async move {
+                assert!(
+                    publisher
+                        .send_to_active_chan("active", "result".to_string(), None)
+                        .await
+                        .unwrap()
+                );
+                None
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(received, "result");
     }
 
     // Helper structure using ChanBuffer with DummyChan.
